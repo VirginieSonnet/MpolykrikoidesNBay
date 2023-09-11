@@ -1,5 +1,7 @@
 <!-- README.md is generated from README.Rmd. -->
 
+# Analysis of Margelfidinium polykrikoides bloom time series in Narragansett Bay
+
 <!-- badges: start -->
 
 [![License:
