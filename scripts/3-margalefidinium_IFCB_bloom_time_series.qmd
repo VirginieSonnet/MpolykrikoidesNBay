@@ -1,0 +1,147 @@
+---
+title: "Margalefidinium 2018 bloom time series" # title of the notebook
+author: "Virginie Sonnet and Jessica Carney" 
+date: 2023-09-15
+description: 
+    This script plots the Margalefidinium 2018 IFCB bloom.
+html: 
+theme: sandstone
+#mainfont: "LM Roman"
+fontsize: 0.99em
+toc: true # table of contents
+toc-depth: 5 
+toc-location: left # table of contents on the left 
+lightbox: TRUE # allows to click on an image to zoom in the HTML document
+embed-resources: true # avoid having dependencies in an extra folder
+smooth-scroll: true
+editor: visual
+code-overflow: wrap
+code-fold: false
+execute:
+    eval: true # run the code chunks FALSE/TRUE
+    echo: true # print the source code FALSE/TRUE
+    error: true # print error messages FALSE/TRUE
+    message: false # print any message FALSE/TRUE
+    warning: false # print warning message FALSE/TRUE
+    cache: false 
+---
+
+```{r}
+#| eval: false
+#| echo: false
+
+Other outputs: pdf_document, html_notebook, word_document 
+The HTML below just says to use the "LM Roman" family as font (kind of Arial?) and if you want the Latex font, you just need "Latin Modern Roman". The line below indicates that the text has to be justified. 
+```
+
+```{r}
+#| include: false
+
+# make sure that no object is in the environment and collect the garbage 
+rm(list=ls())
+gc()
+```
+
+```{r}
+#| results: hide
+
+# general 
+library(tidyverse) 
+library(lubridate)
+```
+
+# Bloom data
+
+------------------------------------------------------------------------
+
+We can restrict the Margalefidinium time series to our study time.
+
+```{r}
+# Margalefidinium time series 
+marga <- read_csv("../data/processed_Margalefidinium_conc+vol.csv")
+
+# Bloom period 
+marga <- filter(marga, status=="study") %>% 
+    select(-status)
+```
+
+We will use the hourly average for the time series to have a regular sampling time coincident with environmental data.
+
+```{r}
+# average per hour 
+marga <- marga %>% 
+  mutate(date=round_date(date,"hour")) %>% 
+  group_by(date) %>% 
+  summarize(conc=mean(conc,na.rm=TRUE))
+
+
+# make it a vector of regular dates (i.e. insert NAs counts when there was no sampling)
+dates <- tibble(date=seq(min(marga$date),max(marga$date),"hour")) 
+marga <- left_join(dates,marga)
+```
+
+# Bloom periods
+
+------------------------------------------------------------------------
+
+The 4 bloom periods are defined as:
+
+-   Non-abundant: 1-7 August =\> 1-10 August
+
+-   Pre-abundant: 8-17 August =\> 11-19 August
+
+-   Abundant: 18-23 August =\> 20-23 August
+
+-   Post-abundant: 11-18 September
+
+```{r}
+marga <- marga %>% 
+  mutate(status=case_when(date < ymd("2018-08-11")~"before",
+                          date >= ymd("2018-08-11") & date < ymd("2018-08-20")~"pre",
+                          date >= ymd("2018-08-20") & date < ymd("2018-08-24")~"during",
+                          date >= ymd("2018-08-24")~"after"))
+```
+
+# Bloom vizualisation
+
+------------------------------------------------------------------------
+
+To inform what might be happening during our missing sampling periods, we add what we know from the weekly Narragansett Bay Plankton Time Series.
+
+```{r}
+# nbpts 
+nbpts <- read_csv("../data/cleaned_nbptsMicroscopy_plankton-counts.csv") %>% 
+  mutate(date=mdy_hms(paste(DATE,"12:00:00",sep=" "))) %>% 
+  # only keep the surface samples
+  filter(COUNT_TYPE %in% c("S/R Cell mixed", "S/R Surface",
+           "S/R surface")) %>% 
+  # select 
+  select(date,marga=Cochlodinium) %>% 
+  # convert to cell/ml 
+  mutate(marga=marga/1000) %>% 
+  # restrict to the bloom period 
+  filter(date >= ymd("2018-08-01") & date < ymd("2018-09-19"))
+```
+
+We can plot them together, coloring by time periods:
+
+```{r}
+marga %>% 
+  mutate(status=factor(status,levels=c("before","pre","during","after"))) %>% 
+  #drop_na(conc) %>% 
+  ggplot(aes(x=date,y=conc,color=status)) +
+  # plot the NBPTS data 
+  geom_point(data=nbpts,aes(x=date,y=marga),color="grey") + 
+  geom_line(data=nbpts,aes(x=date,y=marga),color="grey",linetype="dashed") + 
+  # plot the IFCB GSO Dock data 
+  geom_point(size=0.9) + 
+  geom_line(size=0.3) + 
+  theme_classic() + 
+  theme(legend.position="none",
+        text=element_text(size=15),
+        axis.title.y=element_text(face="bold",size=13)) + 
+  scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922")) + 
+  labs(y="Concentration (# images/ml)",x="")
+
+ggsave(path = "../figures/", filename="Fig3_nolab.tiff", width = 7.8, height = 3.12, device='tiff', dpi=300, units="in")
+```

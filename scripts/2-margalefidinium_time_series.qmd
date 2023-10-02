@@ -1,0 +1,137 @@
+---
+title: "Margalefidinium historical time series" # title of the notebook
+author: "Virginie Sonnet and Jessica Carney" 
+date: 2023-09-12
+description: 
+    This script plots the Margalefidinium time series for the Bay area.
+html: 
+theme: sandstone
+#mainfont: "LM Roman"
+fontsize: 0.99em
+toc: true # table of contents
+toc-depth: 5 
+toc-location: left # table of contents on the left 
+lightbox: TRUE # allows to click on an image to zoom in the HTML document
+embed-resources: true # avoid having dependencies in an extra folder
+smooth-scroll: true
+editor: visual
+code-overflow: wrap
+code-fold: false
+execute:
+    eval: true # run the code chunks FALSE/TRUE
+    echo: true # print the source code FALSE/TRUE
+    error: true # print error messages FALSE/TRUE
+    message: false # print any message FALSE/TRUE
+    warning: false # print warning message FALSE/TRUE
+    cache: false 
+---
+
+```{r}
+#| eval: false
+#| echo: false
+
+Other outputs: pdf_document, html_notebook, word_document 
+The HTML below just says to use the "LM Roman" family as font (kind of Arial?) and if you want the Latex font, you just need "Latin Modern Roman". The line below indicates that the text has to be justified. 
+```
+
+```{r}
+#| include: false
+
+# make sure that no object is in the environment and collect the garbage 
+rm(list=ls())
+gc()
+```
+
+```{r}
+#| results: false
+
+# general 
+library(tidyverse) 
+library(lubridate)
+library(imputeTS)
+
+# plotting
+library(ggpubr)
+library(scales)
+```
+
+# Datasets
+
+------------------------------------------------------------------------
+
+## NABATS
+
+The data used here corresponds to the data hosted by the website https://www.nabats.org/. The only change made is the removal of the non-sampled dates that were recorded as NA (when sampling was happening every two weeks).
+
+```{r}
+#| results: false
+
+nabats <- read_csv("../data/cleaned_nabats1959-1997.csv") %>% 
+    select(date,marga=`Cochlodinium polykrikoides`)
+```
+
+## NBPTS 
+
+The data used here corresponds to the data available on the website https://web.uri.edu/gso/research/plankton/data/. 
+
+```{r}
+#| results: false
+
+nbpts <- read_csv("../data/cleaned_nbptsMicroscopy_plankton-counts.csv") %>% 
+  mutate(date=mdy(DATE)) %>% 
+  # only keep the surface samples
+  filter(COUNT_TYPE %in% c("S/R Cell mixed", "S/R Surface",
+           "S/R surface")) %>% 
+  # select 
+  select(date,marga=Cochlodinium) %>% 
+  # convert to cell/ml 
+  mutate(marga=marga/1000) %>% 
+  # 2 have two records so let's average them 
+  group_by(date) %>% 
+  summarize(marga=mean(marga,na.rm=TRUE))
+```
+
+## IFCB
+
+```{r}
+#| results: false
+
+ifcb <- read_csv("../data/processed_Margalefidinium_conc+vol.csv") %>% 
+  select(date,marga=conc)
+```
+
+# Time series 
+
+------------------------------------------------------------------------
+
+We can combine them together, keeping the source as variable: 
+
+```{r}
+all <- nabats %>% 
+  filter(year(date) > 1970) %>% 
+  mutate(source="NABATS") %>% 
+  bind_rows(mutate(nbpts,source="NBPTS")) %>% 
+  bind_rows(mutate(ifcb,source="IFCB"))
+```
+
+Plotted as a time series: 
+
+```{r}
+all %>% 
+  mutate(source=factor(source,levels=c("NABATS","NBPTS","IFCB"))) %>% 
+  ggplot(aes(x=date,y=marga,color=source)) + 
+  geom_hline(yintercept=330, color="grey") + 
+  geom_vline(xintercept=ymd_hms("2018-08-21 00:00:00"),linetype = "dashed",
+             color="grey") + 
+  geom_point(alpha=0.5) + 
+  geom_text(x=ymd_hms("1976-01-01 00:00:00"),y=300,label="Tang and Gobler, 2019", lineheight=.7,color="grey") +
+  theme_classic() + 
+  labs(x="",y="M. polykrikoides (cells or images/ml)",color="") + 
+  scale_x_datetime(date_breaks="5 years",date_labels="%Y") + 
+  scale_color_manual(values=c("#619CFF","#00BA38","#F8766D")) + 
+  theme(text=element_text(size=12),
+        legend.position=c(0.1,0.9),
+        axis.title = element_text(face = "bold",size=10))
+
+ggsave(path = "../figures/", filename="Fig1.tiff", width = 7.8, height = 3.12, device='tiff', dpi=300, units="in")
+```

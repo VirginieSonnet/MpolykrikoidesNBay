@@ -1,0 +1,357 @@
+---
+title: "Community composition during Margalefidinium bloom" # title of the notebook
+author: "Virginie Sonnet and Jessica Carney" 
+date: 2023-09-15
+description: 
+    This script runs a community composition analysis on the margalefidinium bloom period.
+html: 
+theme: sandstone
+#mainfont: "LM Roman"
+fontsize: 0.99em
+toc: true # table of contents
+toc-depth: 5 
+toc-location: left # table of contents on the left 
+lightbox: TRUE # allows to click on an image to zoom in the HTML document
+embed-resources: true # avoid having dependencies in an extra folder
+smooth-scroll: true
+editor: visual
+code-overflow: wrap
+code-fold: false
+number-sections: true
+execute:
+    eval: true # run the code chunks FALSE/TRUE
+    echo: true # print the source code FALSE/TRUE
+    error: true # print error messages FALSE/TRUE
+    message: false # print any message FALSE/TRUE
+    warning: false # print warning message FALSE/TRUE
+    cache: false 
+---
+
+```{r}
+#| eval: false
+#| echo: false
+
+Other outputs: pdf_document, html_notebook, word_document 
+The HTML below just says to use the "LM Roman" family as font (kind of Arial?) and if you want the Latex font, you just need "Latin Modern Roman". The line below indicates that the text has to be justified. 
+```
+
+```{r}
+#| include: false
+
+# make sure that no object is in the environment and collect the garbage 
+rm(list=ls())
+gc()
+```
+
+```{r}
+#| results: hide 
+
+# general 
+library(tidyverse)
+library(lubridate)
+
+# visualization 
+library(ggrepel)
+library(ggstatsplot)
+library(cowplot)
+
+# analysis 
+library(vegan)
+```
+
+# Data
+
+------------------------------------------------------------------------
+
+```{r}
+data <- read_csv("../data/processed_community_composition.csv")
+```
+
+Because they were 2 morphologies of the same species, we changed:
+
+-   L. convexus for Cerataulina pelagica
+
+-   L. curvatus for L. danicus
+
+The data processing consists in:
+
+1.  Adding the above classes to the one they belong to
+2.  Averaging the data per hour
+3.  Removing detritus and other non-plankton classes
+4.  Adding the bloom periods
+5.  Cleaning the classes names for data visualization
+
+```{r}
+data <- data %>% 
+    
+  # sum the two changed classes
+  mutate(class=case_when(class=="Leptocylindrus convexus"~"group cerataulina_pelagica",
+                                class=="Leptocylindrus curvatus"~"Leptocylindrus danicus",
+                                TRUE ~ class)) %>% 
+  select(-class_id) %>% 
+  group_by(date,class,group_type) %>% 
+  summarize(conc=sum(conc,na.rm=TRUE),
+            adjvol=sum(adjvol,na.rm=TRUE)) %>% 
+    
+  # average per hour
+  mutate(date=round_date(date,"hour"),
+         day=floor_date(date,"day")) %>% 
+  group_by(day,date,class,group_type) %>% 
+  summarize(conc=mean(conc,na.rm=TRUE),
+            adjvol=mean(adjvol,na.rm=TRUE)) %>% 
+    
+  # remove detritus and others non-plankton (Minidiscus is akin to detritus)
+  filter(!(class %in% c("blurry","bead","detritus dark","detritus light",
+                      "unclassified","pollen","bubble","bubble part",
+                      "artefact","bad focus","Minidiscus"))) %>% 
+  ungroup() %>% 
+    
+  # add the periods 
+  mutate(status=case_when(day < ymd("2018-08-11")~"before",
+                        day >= ymd("2018-08-11") & day < ymd("2018-08-20")~"pre",
+                        day >= ymd("2018-08-20") & day < ymd("2018-08-24")~"during",
+                        day >= ymd("2018-08-24")~"after")) %>% 
+    
+    # clean the group names
+    mutate(genus = str_split_i(class," ", 1),
+           species = str_split_i(class," ", 2)) %>% 
+    mutate(sp=case_when(genus=="group"~ str_split_i(class, " ", 2),
+                        is.na(species) ~ genus,
+                        TRUE ~ str_to_sentence(paste(str_sub(genus,1,1),species,sep=". ")))) 
+```
+
+# Community across bloom periods
+
+------------------------------------------------------------------------
+
+All the species \< 2% are pooled together.
+
+```{r}
+spdata <- data %>% 
+    
+    # calculate the biovolume per class per period 
+    group_by(status,group_type,class) %>% 
+    summarize(adjvol=sum(adjvol,na.rm=TRUE)) %>% 
+    
+    # calculate the percentage of each class
+    group_by(status) %>% 
+    mutate(tot=sum(adjvol)) %>% 
+    mutate(p=adjvol*100/tot) %>% 
+    mutate(status=factor(status,levels=c("before","pre","during","after")),
+           group_type=factor(group_type,levels=c("Diatoms","Protozoa",
+                                                 "Dinoflagellates","Ciliates",
+                                                 "Others", "Silicoflagellates",
+                                                 "Zooplankton"))) %>% 
+    
+    # classes that make up less than 2% of the community are pooled together
+    mutate(name=ifelse(p < 2,"others",class)) %>% 
+    group_by(status,name) %>% 
+    summarize(p=sum(p)) %>% 
+    
+    # create a label to display the percentage on the graphs (only if > 5%)
+    mutate(plab=round(p)) %>% 
+    mutate(lab=paste(plab,"%",sep="")) %>%
+    mutate(lab=ifelse(p < 5,NA,lab)) %>% 
+    
+    rename(class=name) %>% 
+    left_join(distinct(data,class,group_type)) %>% 
+    arrange(group_type,p) %>% 
+    mutate(class=case_when(class=="group eucampia"~"Eucampia",
+                              class=="group prorocentrales"~"Prorocentrales",
+                              class=="group coscinodiscales"~"Coscinodiscales",
+                              class=="group chaetoceros_chain"~"Chaetoceros chain",
+                              class=="group thalassiosira_chain"~"Thalassiosira",
+                              class=="group protozoa_morphology"~"Protozoa",
+                              class=="group cylindrotheca"~"Cylindrotheca",
+                              class=="group pyramimonas"~"Pyramimonas",
+                              class=="group arthropoda"~"Arthorpoda",
+                              TRUE ~ class))
+
+# add colors 
+classes <- distinct(ungroup(spdata), group_type,class)
+classes$color <- c("#f7fcf5","#e5f5e0","#c7e9c0","#a1d99b", 
+                   "#74c476","#41ab5d","palegreen4","seagreen4","#006d2c",
+                   "#00441b", # diatoms
+                   "#ffeda0","#fed976","#fec44f","#f2ad00", # dinoflagellate
+                   "darkorchid4", # pyramimonas
+                   "#ff2500", # protozoa
+                   "#5b1a18", # zooplankton
+                    "grey") # others
+                       
+cols <- classes %>% ungroup() %>% distinct(class, color) %>% deframe()
+
+
+# barplot
+sp <- spdata %>% 
+    ungroup() %>% 
+    mutate(class=factor(class,levels=unique(class))) %>% 
+    ggplot(aes(x=status,y=p,fill=class)) + 
+    geom_col() + 
+    geom_text(aes(label=lab),position = position_stack(vjust = 0.5),
+              color="white") + 
+    scale_fill_manual(values=cols) + 
+    theme_classic() + 
+    labs(x="",y="% of the community",fill="") +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1,scale=1)) + 
+    theme(legend.text=element_text(size=10,face="italic"),
+      text=element_text(size=15),
+      axis.text.y=element_text(size=10),
+      axis.title.y=element_text(face="bold"))
+
+sp
+```
+
+# Diversity
+
+------------------------------------------------------------------------
+
+Because we are considering the diversity, and not the dominating species in the community, we are using concentration to calculate the Shannon-Wiener index.
+
+```{r}
+# species number
+meta <- data %>% 
+  filter(conc != 0) %>% 
+  group_by(status,date) %>% 
+  count(name="spnb")
+
+# create the conncentration matrix
+data.mat <- data %>% 
+  select(date,sp,conc) %>% 
+  pivot_wider(names_from="sp",values_from="conc",
+              values_fill=0) %>% 
+  column_to_rownames(var="date") %>% 
+  as.matrix()
+
+# shannon diversity
+meta$H <- diversity(data.mat)
+```
+
+We can visualize it with boxplots.
+
+```{r}
+# for publication
+sh <- meta %>% 
+    select(date,status,H) %>%
+    mutate(status=factor(status,levels=c("before","pre","during","after"))) %>% 
+    ggbetweenstats(
+        x = status,
+        y = H,
+        ylab = "Shannon-Wiener Index",
+        xlab = "",
+        results.subtitle = FALSE,
+        pairwise.comparisons = FALSE) + 
+    scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922")) +
+    theme(text=element_text(size=15))
+
+sh 
+```
+
+We combine the community plot and diversity.
+
+```{r}
+plot_grid(sp,sh,rel_widths=c(1,1.1),
+          nrow=1,ncol=2,
+          labels=c("A","B"))
+
+ggsave(path = "../figures/", filename="Fig5.tiff", width = 7.8, height = 3.8, device='tiff', dpi=300, units="in",scale=1.5)
+```
+
+# Analysis
+
+------------------------------------------------------------------------
+
+## NMDS
+
+We first convert the data to a matrix and run a Hellinger transformation.
+
+```{r}
+# metadata 
+meta <- data %>% 
+  select(date,status) %>% 
+  distinct()
+
+# matrix 
+data.mat <- data %>% 
+  select(date,sp,adjvol) %>% 
+  pivot_wider(names_from="sp",values_from="adjvol",
+              values_fill=0) %>% 
+  column_to_rownames(var="date") %>% 
+  as.matrix()
+
+# Hellinger transformation 
+data.mat.h <- decostand(data.mat,method="hellinger")
+```
+
+Because it's community composition, it's best to do a Hellinger function for distance.
+
+```{r}
+data.mat.h <- decostand(data.mat,method="hellinger")
+```
+
+The distance we use is Bray-Crutis dissimilarity:
+
+```{r}
+set.seed(123)
+nmds = metaMDS(data.mat.h, distance = "bray")
+nmds
+```
+
+We are extracting the scores for sites and species to plot them together.
+
+```{r}
+# extract NMDS scores (x and y coordinates) for sites 
+data.scores = as.data.frame(scores(nmds)$sites) %>% 
+  bind_cols(meta) %>% 
+  mutate(day=floor_date(date,"day"),
+         status=factor(status,levels=c("before","pre","during","after"))) 
+
+
+# extract NMDS scores (x and y coordinates) for species 
+data.species = as.data.frame(scores(nmds)$species)
+data.species = rownames_to_column(data.species,var="sp")
+data.species <- left_join(data.species,distinct(data,group_type,sp)) %>% 
+  # calculate the sum of the species score on both axis
+  mutate(tot=abs(NMDS1)+abs(NMDS2))
+```
+
+Now we can plot them together:
+
+```{r}
+com <- ggplot() + 
+    geom_point(data=data.scores,aes(x=NMDS1,y=NMDS2,color=as.Date(day),
+                        shape=status)) + 
+    geom_point(data=filter(data.species,tot>0.5),aes(x=NMDS1,y=NMDS2),color="grey50") + 
+    #geom_segment(data = data.species, aes(x = 0, xend=NMDS1, y=0, yend=NMDS2), arrow = arrow(length = unit(0.25, "cm")), colour = "grey50", lwd=0.3) + #add vector arrows of significant species
+    geom_text_repel(data=filter(data.species,tot>0.55),aes(x=NMDS1,y=NMDS2,label=sp), size=3.5,color="grey50") + 
+    theme_classic() + 
+    scale_color_viridis_c(trans="date") + 
+    labs(shape="Period",color="Day") +
+  theme(legend.title=element_text(face="bold"),
+        text=element_text(size=15),
+        axis.title=element_text(face="bold")) + 
+  scale_y_continuous(limits=c(-1.25,1)) 
+
+com
+
+ggsave(path = "../figures/", filename="Fig6.pdf", width = 7.8, height = 3.8, device='pdf', dpi=300, units="in")
+```
+
+This graph restricts the species that have a total score between the two axes \> 0.5 (and also cuts the Euplotes).
+
+## ANOSIM
+
+```{r}
+ano = anosim(data.mat.h, data.scores$status, distance = "bray", permutations = 999)
+summary(ano)
+```
+
+## Simper
+
+```{r}
+s = simper(data.mat.h, data.scores$status, permutations=999,distance="bray")
+summary(s)
+
+sum(summary(s)$pre_during$average)
+sum(summary(s)$before_pre$average)
+sum(summary(s)$during_after$average)
+```

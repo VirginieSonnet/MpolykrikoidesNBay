@@ -1,0 +1,352 @@
+---
+title: "Margalefidinium data" # title of the notebook
+author: "Virginie Sonnet and Jessica Carney" 
+date: 2023-09-12
+description: 
+    This script querries IFCB data for Margalefidinium. 
+html: 
+theme: sandstone
+#mainfont: "LM Roman"
+fontsize: 0.99em
+toc: true # table of contents
+toc-depth: 5 
+toc-location: left # table of contents on the left 
+lightbox: TRUE # allows to click on an image to zoom in the HTML document
+embed-resources: true # avoid having dependencies in an extra folder
+smooth-scroll: true
+editor: visual
+code-overflow: wrap
+code-fold: false
+execute:
+    eval: true # run the code chunks FALSE/TRUE
+    echo: true # print the source code FALSE/TRUE
+    error: true # print error messages FALSE/TRUE
+    message: false # print any message FALSE/TRUE
+    warning: false # print warning message FALSE/TRUE
+    cache: false 
+---
+
+```{r}
+#| eval: false
+#| echo: false
+
+Other outputs: pdf_document, html_notebook, word_document 
+The HTML below just says to use the "LM Roman" family as font (kind of Arial?) and if you want the Latex font, you just need "Latin Modern Roman". The line below indicates that the text has to be justified. 
+```
+
+```{r}
+#| include: false
+
+# make sure that no object is in the environment and collect the garbage 
+rm(list=ls())
+gc()
+```
+
+```{r}
+#| results: hide
+
+# general 
+library(tidyverse) 
+library(lubridate)
+
+# databases
+library(RMySQL) 
+
+# plotting 
+library(ggpubr)
+library(scales)
+```
+
+# Margalefidinium IFCB time series
+
+------------------------------------------------------------------------
+
+## Query
+
+```{r}
+#| results: hide
+#| echo: false
+
+Sys.setenv(MYSQL_PWD_VIRGINIE="Restmonami") #pwd
+
+dbname="ifcb"
+host="data.base.uri.edu"
+port=3306
+user="virginie"
+password=Sys.getenv("MYSQL_PWD_VIRGINIE")
+```
+
+Once the database parameters are defined (for privacy reasons, the parameters are not shows here), we can connect:
+
+```{r}
+db_ifcb <- dbConnect(MySQL(),
+                dbname=dbname, 
+                host=host, 
+                port=port, 
+                user=user, 
+                password=password) 
+```
+
+We can query the Margalefidinium data. It is stored under different IDs within our database.
+
+-   id 39 = Margalefidinium *(general ID not used in the current classifier)*
+-   id 279 = Margalefidinium polykrikoides
+-   id 280 = Margalefidinium polykrikoides single
+
+```{r}
+# query the class id counts 
+data <- dbGetQuery(conn = db_ifcb,
+                  statement = "SELECT date, mL_counted, class_id, qc_file, COUNT(class_id) AS count, SUM(summedBiovolume) AS svol
+                  FROM auto_class 
+                  JOIN roi ON auto_class.roi_id=roi.id
+                  JOIN raw_files ON auto_class.raw_file_id=raw_files.id
+                  WHERE location_id=1 AND mL_counted != 0
+                  AND class_id IN (279,280)
+                  GROUP BY date, mL_counted, qc_file, class_id
+                  ORDER BY date;")
+```
+
+A few notes:
+
+-   location 1 corresponds to the GSO Dock
+
+-   dates are in UTC
+
+## Processing
+
+We can add the counts from the 2 categories of Margalefidinium together:
+
+```{r}
+data <- data %>% 
+  group_by(date,mL_counted,qc_file) %>% 
+  summarize(count = sum(count),
+            svol=sum(svol))
+```
+
+The concentration can be calculated by dividing the counts by the amount of ml sampled (mL_counted).
+
+Similarly, the ajusted biovolume is botained by dividing by the ml sampled and converting from pixels to um (1um = 3.5 pixels for our dataset so 1um3=3.5\*3.5\*3.5=42.875 pixels3).
+
+```{r}
+data <- data %>% 
+    # calculate the concentration and ajusted biovolume 
+    mutate(conc=count/mL_counted,
+           adjvol=svol/mL_counted) %>% 
+    # convert into um3
+    mutate(adjvol=adjvol/42.875) %>% 
+    # keep only the relevant classes 
+    select(-c(count,svol)) %>% 
+    # convert the date character column into datetime
+    mutate(date=ymd_hms(date))
+
+# have a look 
+data
+```
+
+## Add 0 counts samples
+
+So far I have only queried the days when there are *Margalefidinium* counts so it doesn't include the days that we sampled but the counts were 0s.
+
+These can be retrieved by getting the total counts per samples, as far as they exist, that means that we sampled at that time.
+
+```{r}
+# query the total counts 
+totdata <- dbGetQuery(conn = db_ifcb,
+                  statement = "SELECT date, mL_counted, qc_file
+                  FROM raw_files 
+                  WHERE location_id=1 AND mL_counted != 0
+                  ORDER BY date;")
+```
+
+Joining them together will introduce NAs for the samples that do not have any Margalefidinium counts, these can be set to 0.
+
+```{r}
+totdata <- totdata %>% 
+    # convert the date to datetime
+    mutate(date=ymd_hms(date)) %>% 
+    # add the Margalefidinium counts and biomass
+    left_join(data) %>% 
+    # set NAs to 0 
+    mutate(conc=ifelse(is.na(conc),0,conc),
+           adjvol=ifelse(is.na(adjvol),0,adjvol))
+```
+
+## Biovolume vs. Concentration
+
+We can check the relationship between biomass and concentration during and outside of the study. The study considers data from August 1st, 2018 to September 17th, 2018.
+
+```{r}
+totdata <- totdata %>% 
+  mutate(status=ifelse(date >= "2018-08-01" & date < "2018-09-18","study","outside"))
+```
+
+```{r}
+totdata %>% 
+  # filter out qc bad (2) and unsure (3)
+  filter(qc_file %in% c(0,1)) %>% 
+  # give better labels 
+  mutate(status=ifelse(status=="outside",
+                       "Outside of the study",
+                       "During the study")) %>% 
+  # plot 
+  ggplot(aes(x=adjvol,y=conc,color=status)) + 
+  geom_point() + 
+  geom_smooth(method="lm") +
+  stat_regline_equation(aes(label =  ..adj.rr.label..)) + 
+  facet_wrap(.~status,scales="free") + 
+  scale_x_continuous(label=comma) + 
+  theme_classic() + 
+  theme(legend.position="none") + 
+  labs(x=~ "Biovolume" (mu * m^3/mL),
+       y="Concentration (#images/mL)",
+       title="Margalefidinium biomass vs. concentration during and outside \nof the study") 
+```
+
+```{r}
+#| eval: true
+
+totdata %>% 
+  # filter out qc bad (2) and unsure (3)
+  filter(qc_file %in% c(0,1)) %>% 
+  # give better labels 
+  mutate(status=ifelse(status=="outside",
+                       "Outside of the study",
+                       "During the study")) %>% 
+  # plot 
+  ggplot(aes(x=adjvol,y=conc)) + 
+  geom_point() + 
+  geom_smooth(method="lm", linetype="dashed") +
+  stat_regline_equation(aes(label =  ..adj.rr.label..)) + 
+  facet_wrap(.~status,scales="free") + 
+  scale_x_continuous(label=comma) + 
+  theme_classic() + 
+  theme(legend.position="none") + 
+  labs(x=~ "Biovolume " (mu * m^3/mL),
+       y="Concentration (#images/mL)") 
+
+ggsave(path = "../figures/", filename="FigS1.tiff", width = 7.8, height = 3.95, device='tiff', dpi=300, units="in")
+```
+
+## Study time
+
+For the concentration and biovolume we will keep the full time series (and the study/outside) criteria to plot a general time series down the line. However, we remove any bad or unsure samples.
+
+```{r}
+totdata <- totdata %>% 
+    filter(!(qc_file %in% c(2,3))) %>% 
+    select(-qc_file)
+```
+
+# Morphology
+
+------------------------------------------------------------------------
+
+The IFCB morphology consists in:
+
+-   summed minor axis length and summed major axis length as retrieved by the ifcb-analysis algorithm
+
+-   if they are classified as chains or single cells
+
+```{r}
+# query the morphology
+morpho <- dbGetQuery(conn = db_ifcb,
+                  statement = "SELECT roi.id, date, class_id,  
+                    summedMajorAxisLength AS major, summedMinorAxisLength AS minor
+                  FROM auto_class 
+                  JOIN roi ON auto_class.roi_id=roi.id
+                  JOIN raw_files ON auto_class.raw_file_id=raw_files.id
+                  WHERE location_id=1 AND mL_counted != 0 AND qc_file=1
+                  AND class_id IN (279,280)
+                  ORDER BY date;")
+```
+
+We can transform the values into um and keep only the data for our study time:
+
+```{r}
+morpho <- morpho %>% 
+    # convert into um
+    mutate(major=major/3.5,
+           minor=minor/3.5) %>% 
+    # convert the date character column into datetime
+    mutate(date=ymd_hms(date)) %>% 
+    # keep only data for the study 
+    filter(date >= "2018-08-01" & date < "2018-09-18")
+```
+
+Contrary to the concentration and biovolume, for the analysis we are going to do we do not need the samples when 0 *Margalefidinium* were recorded.
+
+# Community composition
+
+------------------------------------------------------------------------
+
+## Query
+
+For the community composition, we only need samples for our study time.
+
+```{r}
+# query the class id counts for the bloom period
+com <- dbGetQuery(conn = db_ifcb,
+                  statement = "SELECT date, mL_counted, class_id, COUNT(class_id) AS count, SUM(summedBiovolume) AS svol
+                  FROM auto_class 
+                  JOIN roi ON auto_class.roi_id=roi.id
+                  JOIN raw_files ON auto_class.raw_file_id=raw_files.id
+                  WHERE location_id=1 AND mL_counted != 0 
+                  AND date >= '2018-08-01 00:00:00' AND date < '2018-09-18 00:00:00'
+                  AND qc_file=1
+                  GROUP BY date, mL_counted, class_id
+                  ORDER BY date,class_id;")
+```
+
+## Processing
+
+There are a few classes that need to be pooled together (they refer to a different morphology of the same genus):
+
+-   Margalefidinium: 279 and 280 =\> 279
+-   Skeletonema: 318 and 54 =\> 318
+-   Thalassiosira: 418 and 425 =\> 418
+
+```{r}
+com <- com %>% 
+  mutate(new_id=case_when(class_id==280~279,
+                          class_id==54~318,
+                          class_id==425~418,
+                          TRUE ~ class_id)) %>% 
+  group_by(date,mL_counted,new_id) %>% 
+  summarize(count = sum(count),svol=sum(svol)) %>% 
+  rename(class_id=new_id)
+```
+
+We need to add the class names:
+
+```{r}
+classes <- dbGetQuery(conn = db_ifcb,
+                  statement = "SELECT id AS class_id,class,group_type
+                  FROM classes;")
+
+com <- left_join(com,classes)
+```
+
+And now we can convert and adjust the concentration and biovolume:
+
+```{r}
+com <- com %>% 
+    # calculate the concentration and ajusted biovolume 
+    mutate(conc=count/mL_counted,
+           adjvol=svol/mL_counted) %>% 
+    # convert into um3
+    mutate(adjvol=adjvol/42.875) %>% 
+    # keep only the relevant classes 
+    select(-c(count,svol)) %>% 
+    # convert the date character column into datetime
+    mutate(date=ymd_hms(date))
+```
+
+# Export
+
+------------------------------------------------------------------------
+
+```{r}
+write_csv(totdata,"../data/processed_Margalefidinium_conc+vol.csv")
+write_csv(morpho,"../data/processed_Margalefidinium_morpho.csv")
+write_csv(com,"../data/processed_community_composition.csv")
+```

@@ -1,0 +1,382 @@
+---
+title: "Environmental drivers of Margalefidinium IFCB bloom" # title of the notebook
+author: "Virginie Sonnet and Jessica Carney" 
+date: 2023-09-15
+description: 
+    This script investigates the environmental forcings of the Margalefidinium bloom in the IFCB in 2018. 
+html: 
+theme: sandstone
+#mainfont: "LM Roman"
+fontsize: 0.99em
+toc: true # table of contents
+toc-depth: 5 
+toc-location: left # table of contents on the left 
+lightbox: TRUE # allows to click on an image to zoom in the HTML document
+embed-resources: true # avoid having dependencies in an extra folder
+smooth-scroll: true
+editor: visual
+code-overflow: wrap
+code-fold: false
+execute:
+    eval: true # run the code chunks FALSE/TRUE
+    echo: true # print the source code FALSE/TRUE
+    error: true # print error messages FALSE/TRUE
+    message: false # print any message FALSE/TRUE
+    warning: false # print warning message FALSE/TRUE
+    cache: false 
+---
+
+```{r}
+#| eval: false
+#| echo: false
+
+Other outputs: pdf_document, html_notebook, word_document 
+The HTML below just says to use the "LM Roman" family as font (kind of Arial?) and if you want the Latex font, you just need "Latin Modern Roman". The line below indicates that the text has to be justified. 
+```
+
+```{r}
+#| include: false
+
+# make sure that no object is in the environment and collect the garbage 
+rm(list=ls())
+gc()
+```
+
+```{r}
+#| results: hide 
+
+# general 
+library(tidyverse) 
+library(lubridate)
+
+# visualization 
+#library(ggpubr)
+#library(scales)
+library(castr)
+library(directlabels)
+library(cowplot)
+library(wesanderson)
+```
+
+# Margalefidinium data
+
+------------------------------------------------------------------------
+
+```{r}
+marga <- read_csv("../data/processed_Margalefidinium_conc+vol.csv") %>% 
+    # only keep the study time 
+    filter(status=="study") %>% 
+    # add the bloom period
+    mutate(status=case_when(date < ymd("2018-08-11")~"before",
+                          date >= ymd("2018-08-11") & date < ymd("2018-08-20")~"pre",
+                          date >= ymd("2018-08-20") & date < ymd("2018-08-24")~"during",
+                          date >= ymd("2018-08-24")~"after")) %>% 
+    # round per hour 
+    mutate(date=round_date(date,"hour")) %>% 
+    group_by(status,date) %>% 
+    summarize(conc=mean(conc,na.rm=TRUE),
+              ajvol=mean(adjvol,na.rm=TRUE)) %>% 
+    arrange(date)
+```
+
+# Environmental time series
+
+------------------------------------------------------------------------
+
+We have collected and processed environmental data from the Bay from different sources and averaged it over the hour to consistently match the IFCB.
+
+```{r}
+# environmental data 
+envt <- read_csv("../data/NBay_hourly_GSO_nuts.csv",guess_max=180000) %>% 
+  filter(date >= ymd("2018-08-01") & date < ymd("2018-09-19")) %>% 
+  mutate(status=case_when(date < ymd("2018-08-11")~"before",
+                          date >= ymd("2018-08-11") & date < ymd("2018-08-20")~"pre",
+                          date >= ymd("2018-08-20") & date < ymd("2018-08-24")~"during",
+                          date >= ymd("2018-08-24")~"after")) 
+```
+
+To ease the visualization, we can smooth the time series with a window of 17 hours.
+
+```{r}
+senvt <- envt %>% 
+  select(status,date,temp:nitrate) %>% 
+  pivot_longer(temp:nitrate, names_to="var",values_to="val") %>% 
+  arrange(var,date) %>% 
+  # do the smoothing for each variable
+  group_by(var) %>% 
+  mutate(sval=smooth(val,k=17)) %>% 
+  select(-val) %>% 
+  pivot_wider(names_from="var",values_from="sval")
+```
+
+## Nutrients
+
+```{r}
+# nutrients time series 
+nuts <- envt %>% 
+  select(status,date,Nitrogen=di_no,Phosphate=di_po,Silicate=si) %>% 
+  mutate(status=factor(status,levels=c("before","pre","during","after"))) %>% 
+  drop_na() %>% 
+  pivot_longer(Nitrogen:Silicate,names_to="var",values_to="val") %>% 
+  ggplot(aes(x=date,y=val,group=var)) + 
+  geom_line(color="grey50") + 
+  geom_point(aes(color=status),size=2) + 
+  geom_vline(xintercept=ymd_hms("2018-08-20 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  geom_vline(xintercept=ymd_hms("2018-08-24 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  geom_dl(aes(label = var), method = list(dl.trans(x = x + 0.2,y=y+0.1),cex=0.8,
+                                          "last.points"),
+          color="grey50") + 
+  scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922")) +
+  theme_classic() +
+  theme(legend.position=c(0.075,0.6),
+        legend.title= element_blank(),
+        legend.background = element_blank(),
+        legend.box.background=element_rect(color="grey50"),
+        legend.box.margin=margin(0,0,0,0),
+        legend.spacing.y = unit(0, "mm"),
+        text=element_text(size=15),
+        axis.title.y=element_text(face="bold",size=10),
+        plot.margin = unit(c(0, 0, 0, 0), "cm")) + 
+  labs(x="",y=~ bold("Nutrients " (mM/m^2))) + 
+  scale_x_datetime(limits=c(ymd_hms("2018-08-01 00:00:00"),ymd_hms("2018-09-18 00:00:00")))
+nuts
+```
+
+## Temperature
+
+```{r}
+temp <- envt %>% 
+  select(status,date,temperature=temp) %>% 
+  # add the smoothed values 
+  left_join(select(senvt,date,stemperature=temp)) %>% 
+  pivot_longer(temperature:stemperature,names_to="var",values_to="val") %>%  
+  mutate(status=replace(status,var=="temperature","original")) %>% 
+  mutate(status=factor(status,levels=c("before","pre","during","after","original"))) %>% 
+  ggplot(aes(x=date,y=val,group=var)) + 
+  geom_line(color="grey90") + 
+  geom_point(aes(color=status,group=var,size=var)) + 
+  geom_vline(xintercept=ymd_hms("2018-08-20 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  geom_vline(xintercept=ymd_hms("2018-08-24 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922",
+                                "grey50")) +
+  scale_size_manual(values=c(1,0.1)) + 
+  theme_classic() +
+  theme(legend.position="none",
+        text=element_text(size=15),
+        axis.title.y=element_text(face="bold",size=10),
+        plot.margin = unit(c(0, 0, 0, 0), "cm")) + 
+  labs(x="",y="Temperature (°C)")
+temp
+```
+
+## Salinity
+
+```{r}
+# salinity
+sal <- envt %>% 
+  select(status,date,salinity=sal) %>% 
+  left_join(select(senvt,date,ssalinity=sal)) %>% 
+  pivot_longer(salinity:ssalinity,names_to="var",values_to="val") %>%  
+  mutate(status=replace(status,var=="salinity","original")) %>% 
+  mutate(status=factor(status,levels=c("before","pre","during","after","original"))) %>% 
+  ggplot(aes(x=date,y=val,group=var)) + 
+  geom_line(color="grey90") + 
+  geom_point(aes(color=status,group=var,size=var)) + 
+  geom_vline(xintercept=ymd_hms("2018-08-20 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  geom_vline(xintercept=ymd_hms("2018-08-24 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  #facet_wrap(.~var,scales="free_y") + 
+  scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922",
+                                "grey50")) +
+  scale_size_manual(values=c(0.1,1)) + 
+  theme_classic() +
+  theme(legend.position="none",
+        text=element_text(size=15),
+        axis.title.y=element_text(face="bold",size=10),
+        plot.margin = unit(c(0, 0, 0, 0), "cm")) + 
+  labs(x="",y="Salinity")
+sal
+```
+
+## River input
+
+```{r}
+# river input 
+riv <- envt %>% 
+  select(status,date,flow) %>% 
+  mutate(status=factor(status,levels=c("before","pre","during","after"))) %>%
+  ggplot(aes(x=date,y=flow)) + 
+  geom_line(color="grey90") + 
+  geom_point(aes(color=status)) + 
+  geom_vline(xintercept=ymd_hms("2018-08-20 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  geom_vline(xintercept=ymd_hms("2018-08-24 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922",
+                                "grey50")) +
+  theme_classic() +
+  theme(legend.position="none",
+        text=element_text(size=15),
+        axis.title.y=element_text(size=10),
+        plot.margin = unit(c(0, 0, 0, 0), "cm")) + 
+  labs(x="",y=~ bold("River flow " (m^3/s)))
+riv
+```
+
+## Water level range
+
+```{r}
+wrange <- envt %>% 
+  select(status,date,range) %>% 
+  drop_na() %>% 
+  mutate(status=factor(status,levels=c("before","pre","during","after"))) %>%
+  ggplot(aes(x=date,y=range)) + 
+  geom_line(color="grey90") + 
+  geom_point(aes(color=status),size=2) + 
+  geom_vline(xintercept=ymd_hms("2018-08-20 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  geom_vline(xintercept=ymd_hms("2018-08-24 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922",
+                                "grey50")) +
+  theme_classic() +
+  theme(legend.position="none",
+        text=element_text(size=15),
+        axis.title.y=element_text(face="bold",size=10),
+        plot.margin = unit(c(0, 0, 0, 0), "cm")) + 
+  labs(x="",y="Tidal range (m)")
+wrange
+```
+
+## Daily precipitation
+
+```{r}
+# daily rainfall data
+data_pptn <- read_csv("../data/uscrn.csv") %>% 
+  mutate(date=ymd(LST_DATE),
+         prec=PRECIPITATION) %>% 
+  filter(date >= ymd("2018-08-01") & date < ymd("2018-09-18")) %>% 
+  mutate(status=case_when(date < ymd("2018-08-11")~"before",
+                          date >= ymd("2018-08-11") & date < ymd("2018-08-20")~"pre",
+                          date >= ymd("2018-08-20") & date < ymd("2018-08-24")~"during",
+                          date >= ymd("2018-08-24")~"after")) %>% 
+  select(status,date,prec) %>% 
+  group_by(status,date) %>% 
+  summarize(prec=sum(prec,na.rm=TRUE))
+
+# plot
+pp <- data_pptn %>% 
+  select(status,date,prec) %>% 
+  mutate(status=factor(status,levels=c("before","pre","during","after"))) %>%
+  ggplot(aes(x=date,y=prec,fill=status)) + 
+  geom_col() + 
+  geom_vline(xintercept=ymd_hms("2018-08-20 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  geom_vline(xintercept=ymd_hms("2018-08-24 00:00:00"),linetype="dashed",
+             color="grey80") + 
+  scale_fill_manual(values = c("#440154","#577B9E","#35b779","#C3D922")) +
+  theme_classic() +
+  theme(legend.position="none",
+        text=element_text(size=15),
+        axis.title.y=element_text(face="bold",size=10),
+        plot.margin = unit(c(0, 0, 0, 0), "cm")) + 
+  labs(x="",y="Daily Precipitation (mm)")
+pp
+```
+
+## Combine
+
+```{r}
+plot_grid(temp,sal,pp,riv,wrange,nuts,align="vh",labels=c("A","B","C","D","E","F"),
+    ncol=1,nrow=6,label_x=0.97,label_y=1)
+```
+
+```{r}
+#| eval: false
+
+ggsave(path = "../figures/", filename="Fig7.tiff", width = 7.8, height = 8, device='tiff', dpi=300, units="in",scale=1.2)
+```
+
+## Salinity vs. concentration during bloom
+
+```{r}
+marga %>% 
+  left_join(envt) %>% 
+  filter(date > "2018-08-19" & date < "2018-08-24") %>% 
+  ggplot(aes(x=sal,y=conc,color=wlevel)) + 
+  geom_point() + 
+  scale_color_gradientn(colors=wes_palette("Zissou1",5,type = "continuous")) + 
+  theme_classic() +
+  theme(legend.position=c(0.95,0.75),
+        text=element_text(size=15),
+        axis.title=element_text(face="bold",size=12),
+        legend.title=element_text(size=12),
+        plot.margin=unit(c(0.25,0.5,0,0.25), "cm")) + 
+  labs(x="Salinity",y="M. polykrikoides (#images/ml)",color="Water \nlevel (m)") 
+
+ggsave(path = "../figures/", filename="FigS4.tiff", width = 4, height = 3, device='tiff', dpi=300, units="in",scale=1.2)
+```
+
+# GAM
+
+## Hourly non-detrended
+
+```{r}
+library(MASS)
+#library(pscl)
+library(mgcv)
+
+# let's prepare the data for the first hourly dataset 
+data <- envt %>% 
+  ungroup() %>% 
+  dplyr::select(date,temp,sal,light,pptn,flow,wlevel,wind) %>% 
+  right_join(marga) %>% 
+  drop_na(temp) %>% 
+  mutate(date=with_tz(date,tzone="America/New_York")) %>% 
+  mutate(day=floor_date(date,"day"),
+         hour=hour(date)) %>% 
+  filter(status != "after")
+  
+
+visdat::vis_dat(data)
+
+CP<-data[,c("conc")]
+t<-data[,c("temp")]
+s<-data[,c("sal")]
+sr<-data[,c("light")]
+prec<-data[,c("pptn")]
+tide<-data[,c("wlevel")]
+wspd<-data[,c("wind")]
+fl<-data[,c("flow")]
+dates = data[,c("day")]
+bloom_phase=data[,c("status")]
+```
+
+### GAM
+
+```{r}
+# all variables
+fit_tw1 <- gam(conc~temp+sal+wlevel+light+pptn+flow, data= data,
+                        family=tw())
+summary(fit_tw1)
+AIC(fit_tw1)
+
+# best fit 
+fit_tw2 <- gam(conc~temp+sal+wlevel, data= data,
+                        family=tw())
+summary(fit_tw2)
+AIC(fit_tw2)
+```
+
+```{r}
+plot(data$conc,lwd=0.7,col="grey")
+#lines(fitted(fit_zigamma3), col="blue",lwd=2)
+lines(fit_tw2$fitted.values, col="orange",lwd=2)
+legend("topleft", c("GAM-Tweedie"),col=c("orange"),lwd=2,bty="n")
+legend(c(0,534),"\n    Data",col="grey",pch=1,bty="n")
+```

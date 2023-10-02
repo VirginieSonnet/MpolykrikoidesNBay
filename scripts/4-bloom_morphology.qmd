@@ -1,0 +1,157 @@
+---
+title: "Morphological changes in Margalefidinium during the bloom" # title of the notebook
+author: "Virginie Sonnet and Jessica Carney" 
+date: 2023-09-15
+description: 
+    This script plots morphological characteristics of Margalefidinium throughout the bloom study period.
+html: 
+theme: sandstone
+#mainfont: "LM Roman"
+fontsize: 0.99em
+toc: true # table of contents
+toc-depth: 5 
+toc-location: left # table of contents on the left 
+lightbox: TRUE # allows to click on an image to zoom in the HTML document
+embed-resources: true # avoid having dependencies in an extra folder
+smooth-scroll: true
+editor: visual
+code-overflow: wrap
+code-fold: false
+execute:
+    eval: true # run the code chunks FALSE/TRUE
+    echo: true # print the source code FALSE/TRUE
+    error: true # print error messages FALSE/TRUE
+    message: false # print any message FALSE/TRUE
+    warning: false # print warning message FALSE/TRUE
+    cache: false 
+---
+
+```{r}
+#| eval: false
+#| echo: false
+
+Other outputs: pdf_document, html_notebook, word_document 
+The HTML below just says to use the "LM Roman" family as font (kind of Arial?) and if you want the Latex font, you just need "Latin Modern Roman". The line below indicates that the text has to be justified. 
+```
+
+```{r}
+#| include: false
+
+# make sure that no object is in the environment and collect the garbage 
+rm(list=ls())
+gc()
+```
+
+```{r}
+#| results: hide
+
+# general 
+library(tidyverse) 
+library(lubridate)
+
+# visualization 
+library(ggstatsplot)
+library(gginnards)
+library(cowplot)
+```
+
+# Data
+
+--------------------------------------------------------------------------------
+
+```{r}
+morpho <- read_csv("../data/processed_Margalefidinium_morpho.csv")
+```
+
+We can add the different bloom periods to the morphological data. 
+
+```{r}
+morpho <- morpho %>% 
+  mutate(status=case_when(date < ymd("2018-08-11")~"before",
+                          date >= ymd("2018-08-11") & date < ymd("2018-08-20")~"pre",
+                          date >= ymd("2018-08-20") & date < ymd("2018-08-24")~"during",
+                          date >= ymd("2018-08-24")~"after")) %>% 
+  mutate(status=factor(status,levels=c("before","pre","during","after"))) 
+```
+
+# Major axis 
+
+--------------------------------------------------------------------------------
+
+```{r}
+maj <- morpho %>% 
+      ggbetweenstats(
+          x = status,
+          y = major,
+          xlab="",
+          ylab=~ bold("Major axis " (mu * m)),
+          results.subtitle = FALSE,
+          pairwise.comparisons = FALSE) + 
+      scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922")) +
+      theme(text=element_text(size=15),
+            axis.text.x=element_blank(),
+            plot.margin = unit(c(0, 0.5, 0, 0), "cm"))
+maj
+```
+
+
+# Minor axis 
+
+--------------------------------------------------------------------------------
+
+```{r}
+minor <- morpho %>% 
+          ggbetweenstats(
+              x = status,
+              y = minor,
+              xlab="",
+              ylab=~ bold("Minor axis " (mu * m)),
+              results.subtitle = FALSE,
+              pairwise.comparisons = FALSE) + 
+          scale_color_manual(values = c("#440154","#577B9E","#35b779","#C3D922")) +
+          theme(text=element_text(size=15),
+                panel.grid.minor = element_blank(),
+                plot.margin = unit(c(0, 0.5, 0, 0), "cm"))
+minor
+```
+
+
+# Single-cells and chains 
+
+--------------------------------------------------------------------------------
+
+```{r}
+chain <- morpho %>% 
+    mutate(class=ifelse(class_id==280,"Single","Chain")) %>% 
+    ggbarstats( 
+          x = class,
+          y = status,
+          xlab = "",
+          ylab = "% of identitied images",
+          legend.title     = "",
+          results.subtitle = FALSE,
+          pairwise.comparisons = FALSE) + 
+    scale_fill_manual(values = c("white","black")) +
+    theme(text=element_text(size=15),
+          panel.grid.minor=element_blank(),
+          axis.text.x=element_text(size=12))
+
+chain <- delete_layers(chain, "GeomText")
+chain
+```
+
+
+# Combined plot
+
+--------------------------------------------------------------------------------
+
+```{r}
+size <- size <- plot_grid(maj,minor,labels=c("A","B"),rel_heights=c(0.97,1),
+                          nrow=2,ncol=1,align="v")
+
+plot_grid(size,chain,labels=c("","C"),ncol=2,
+          rel_widths=c(1.75,1))
+
+ggsave(path = "../figures/", filename="Fig4.tiff", width = 8.4, height = 4, device='tiff', dpi=300, units="in",scale=1.4)
+```
+
